@@ -170,6 +170,9 @@ static void storageTests() {
     assert(!addMacro(string(256, 'b'), "test"));
     assert(!addMacro("long", string(65536, 'b')));
     assert(!addMacro("invalid", string(1, static_cast<char>(0xFF))));
+    const string invalidName(1, static_cast<char>(0xFF));
+    assert(!hasMacro(invalidName));
+    assert(!deleteMacro(invalidName));
     assert(addMacro(string(255, 'b'), string(65535, 'c')));
     getMacroSaveData(saved);
     assert(initMacroMap(saved.data(), static_cast<int>(saved.size())));
@@ -219,6 +222,7 @@ static void storageTests() {
     {
         std::ofstream file(path);
         file << ";header\ninvalid line\n::colon\n:ignored\n::\nbtw:replacement\n";
+        file << invalidName << ":invalid UTF-8 name\n";
     }
     readFromFile(path, true); assert(hasMacro(":"));
     std::remove(path.c_str());

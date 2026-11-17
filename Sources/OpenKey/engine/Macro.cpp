@@ -179,7 +179,11 @@ bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
 
 bool hasMacro(const string& macroName) {
     vector<Uint32> key;
-    convert(macroName, key);
+    try {
+        convert(macroName, key);
+    } catch (const std::range_error&) {
+        return false;
+    }
     return (macroMap.find(key) != macroMap.end());
 }
 
@@ -213,7 +217,11 @@ bool addMacro(const string& macroText, const string& macroContent) {
 
 bool deleteMacro(const string& macroText) {
     vector<Uint32> key;
-    convert(macroText, key);
+    try {
+        convert(macroText, key);
+    } catch (const std::range_error&) {
+        return false;
+    }
     if (macroMap.find(key) != macroMap.end()) {
         macroMap.erase(key);
         return true;
