@@ -642,6 +642,5 @@ VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, H
 			}
 		}
 		SendMetroBackspace();
-		}
 	}
 }
