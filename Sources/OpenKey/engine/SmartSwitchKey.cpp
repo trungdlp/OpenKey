@@ -15,25 +15,33 @@
 static map<string, Int8> _smartSwitchKeyData;
 static string _cacheKey = ""; //use cache for faster
 static Int8 _cacheData = 0; //use cache for faster
+static bool _hasCache = false;
 
-void initSmartSwitchKey(const Byte* pData, const int& size) {
-    _smartSwitchKeyData.clear();
-    if (pData == NULL) return;
-    Uint16 count = 0;
-    Uint32 cursor = 0;
-    if (size >= 2) {
-        memcpy(&count, pData + cursor, 2);
-        cursor+=2;
+bool initSmartSwitchKey(const Byte* pData, const int& size) {
+    if (size == 0) {
+        _smartSwitchKeyData.clear();
+        _hasCache = false;
+        return true;
     }
-    Uint8 bundleIdSize;
-    Uint8 value;
-    for (int i = 0; i < count; i++) {
-        bundleIdSize = pData[cursor++];
-        string bundleId((char*)pData + cursor, bundleIdSize);
+    if (!pData || size < 2) return false;
+    const size_t length = static_cast<size_t>(size);
+    const Uint16 count = pData[0] | (pData[1] << 8);
+    size_t cursor = 2;
+    map<string, Int8> loaded;
+    for (Uint32 n = 0; n < count; n++) {
+        if (cursor >= length) return false;
+        const size_t bundleIdSize = pData[cursor++];
+        if (!bundleIdSize || bundleIdSize >= length - cursor) return false;
+        string bundleId(reinterpret_cast<const char*>(pData + cursor), bundleIdSize);
         cursor += bundleIdSize;
-        value = pData[cursor++];
-        _smartSwitchKeyData[bundleId] = value;
+        const Byte value = pData[cursor++];
+        if (value > 9) return false;
+        loaded.emplace(std::move(bundleId), value);
     }
+    if (cursor != length) return false;
+    _smartSwitchKeyData.swap(loaded);
+    _hasCache = false;
+    return true;
 }
 
 void getSmartSwitchKeySaveData(vector<Byte>& outData) {
@@ -52,14 +60,19 @@ void getSmartSwitchKeySaveData(vector<Byte>& outData) {
 }
 
 int getAppInputMethodStatus(const string& bundleId, const int& currentInputMethod) {
-    if (_cacheKey.compare(bundleId) == 0) {
+    if (_hasCache && _cacheKey == bundleId) {
         return _cacheData;
     }
-    if (_smartSwitchKeyData.find(bundleId) != _smartSwitchKeyData.end()) {
+    if (bundleId.empty() || bundleId.size() > 255 || currentInputMethod < 0 || currentInputMethod > 9) return -1;
+    const auto entry = _smartSwitchKeyData.find(bundleId);
+    if (entry != _smartSwitchKeyData.end()) {
         _cacheKey = bundleId;
-        _cacheData = _smartSwitchKeyData[bundleId];
+        _cacheData = entry->second;
+        _hasCache = true;
         return _cacheData;
     }
+    if (_smartSwitchKeyData.size() >= 65535) return -1;
+    _hasCache = true;
     _cacheKey = bundleId;
     _cacheData = currentInputMethod;
     _smartSwitchKeyData[bundleId] = _cacheData;
@@ -67,7 +80,10 @@ int getAppInputMethodStatus(const string& bundleId, const int& currentInputMetho
 }
 
 void setAppInputMethodStatus(const string& bundleId, const int& language) {
+    if (bundleId.empty() || bundleId.size() > 255 || language < 0 || language > 9) return;
+    if (_smartSwitchKeyData.size() >= 65535 && _smartSwitchKeyData.find(bundleId) == _smartSwitchKeyData.end()) return;
     _smartSwitchKeyData[bundleId] = language;
     _cacheKey = bundleId;
     _cacheData = language;
+    _hasCache = true;
 }

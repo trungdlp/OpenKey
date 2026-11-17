@@ -1,0 +1,59 @@
+name: Engine checks
+
+on:
+  push:
+    branches: [master, 'trduong/**']
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S tests -B build/checks -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPENKEY_SANITIZERS=${{ runner.os != 'Windows' && 'ON' || 'OFF' }}
+      - name: Build
+        run: cmake --build build/checks --config RelWithDebInfo --parallel 2
+      - name: Test
+        run: ctest --test-dir build/checks -C RelWithDebInfo --output-on-failure
+
+  macos-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native macOS app
+        run: xcodebuild -project Sources/OpenKey/macOS/OpenKey.xcodeproj -scheme OpenKey -configuration Release -derivedDataPath build/macOS CODE_SIGNING_ALLOWED=NO build
+
+  coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Add LLVM to PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+      - name: Configure instrumented tests
+        run: cmake -S tests -B build/coverage -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DOPENKEY_COVERAGE=ON
+      - name: Build
+        run: cmake --build build/coverage --parallel 2
+      - name: Enforce production line coverage above 80%
+        run: python tests/Coverage.py build/coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ runner.os }}
+          path: build/coverage/coverage

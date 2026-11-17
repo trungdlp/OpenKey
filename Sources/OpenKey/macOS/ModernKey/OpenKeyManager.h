@@ -17,13 +17,14 @@ typedef void (^CheckNewVersionCallback)(void);
 +(BOOL)isInited;
 +(BOOL)initEventTap;
 +(BOOL)stopEventTap;
++(void)resumeEventTap;
 
 +(NSArray*)getTableCodes;
 
 +(NSString*)getBuildDate;
 +(void)showMessage:(NSWindow*)window message:(NSString*)msg subMsg:(NSString*)subMsg;
 
-+(BOOL)quickConvert;
++(void)quickConvert:(void (^)(BOOL success))completion;
 
 +(void)checkNewVersion:(NSWindow*)parent callbackFunc:(CheckNewVersionCallback) callback;
 @end

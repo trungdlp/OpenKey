@@ -14,7 +14,7 @@
 
 using namespace std;
 
-void initSmartSwitchKey(const Byte* pData, const int& size);
+bool initSmartSwitchKey(const Byte* pData, const int& size);
 
 /**
  * convert all data to save on disk

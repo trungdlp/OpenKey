@@ -9,7 +9,7 @@
 #include <algorithm>
 #include "Engine.h"
 #include <string.h>
-#include <list>
+#include <deque>
 #include "Macro.h"
 
 static vector<Uint8> _charKeyCode = {
@@ -83,7 +83,7 @@ vKeyHookState HookState;
 static Uint32 TypingWord[MAX_BUFF];
 static Byte _index = 0;
 static vector<Uint32> _longWordHelper; //save the word when _index >= MAX_BUFF
-static list<vector<Uint32>> _typingStates; //Aug 28th, 2019: typing helper, save long state of Typing word, can go back and modify the word
+static deque<vector<Uint32>> _typingStates; //Typing history remains unlimited until a session-breaking event.
 vector<Uint32> _typingStatesData;
 
 /**
@@ -123,16 +123,23 @@ static bool _willTempOffEngine = false;
 void findAndCalculateVowel(const bool& forGrammar=false);
 void insertMark(const Uint32& markMask, const bool& canModifyFlag=true);
 
-static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
 wstring utf8ToWideString(const string& str) {
-    return converter.from_bytes(str.c_str());
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.from_bytes(str.data(), str.data() + str.size());
 }
 
 string wideStringToUtf8(const wstring& str) {
-    return converter.to_bytes(str.c_str());
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.to_bytes(str.data(), str.data() + str.size());
 }
 
 void* vKeyInit() {
+    startNewSession();
+    HookState = vKeyHookState{};
+    _spaceCount = 0;
+    _specialChar.clear();
+    _upperCaseStatus = 0;
+    _willTempOffEngine = false;
     _index = 0;
     _stateIndex = 0;
     _useSpellCheckingBefore = vCheckSpelling;
@@ -383,58 +390,36 @@ void saveWord() {
     if (hCode != vReplaceMaro) {
         if (_index > 0) {
             if (_longWordHelper.size() > 0) { //save long word first
-                _typingStatesData.clear();
-                for (i = 0; i < _longWordHelper.size(); i++) {
-                    if (i != 0 && i % MAX_BUFF == 0) { //save if overflow
-                        _typingStates.push_back(_typingStatesData);
-                        _typingStatesData.clear();
-                    }
-                    _typingStatesData.push_back(_longWordHelper[i]);
+                for (size_t pos = 0; pos < _longWordHelper.size(); pos += MAX_BUFF) {
+                    const size_t end = min(pos + MAX_BUFF, _longWordHelper.size());
+                    _typingStates.emplace_back(_longWordHelper.begin() + pos, _longWordHelper.begin() + end);
                 }
-                _typingStates.push_back(_typingStatesData);
                 _longWordHelper.clear();
             }
             
             //save current word
-            _typingStatesData.clear();
-            for (i = 0; i < _index; i++) {
-                _typingStatesData.push_back(TypingWord[i]);
-            }
-            _typingStates.push_back(_typingStatesData);
+            _typingStates.emplace_back(TypingWord, TypingWord + _index);
         }
     } else { //save macro words
-        _typingStatesData.clear();
-        for (i = 0; i < hMacroData.size(); i++) {
-            if (i != 0 && i % MAX_BUFF == 0) { //break if overflow
-                _typingStates.push_back(_typingStatesData);
-                _typingStatesData.clear();
-            }
-            _typingStatesData.push_back(hMacroData[i]);
+        for (size_t pos = 0; pos < hMacroData.size(); pos += MAX_BUFF) {
+            const size_t end = min(pos + MAX_BUFF, hMacroData.size());
+            _typingStates.emplace_back(hMacroData.begin() + pos, hMacroData.begin() + end);
         }
-        _typingStates.push_back(_typingStatesData);
     }
 }
 
 void saveWord(const Uint32& keyCode, const int& count) {
-    _typingStatesData.clear();
-    for (i = 0; i < count; i++) {
-        _typingStatesData.push_back(keyCode);
-    }
-    _typingStates.push_back(_typingStatesData);
+    _typingStates.emplace_back(count, keyCode);
 }
 
 void saveSpecialChar() {
-    _typingStatesData.clear();
-    for (i = 0; i < _specialChar.size(); i++) {
-        _typingStatesData.push_back(_specialChar[i]);
-    }
-    _typingStates.push_back(_typingStatesData);
+    _typingStates.push_back(std::move(_specialChar));
     _specialChar.clear();
 }
 
 void restoreLastTypingState() {
     if (_typingStates.size() > 0) {
-        _typingStatesData = _typingStates.back();
+        _typingStatesData = std::move(_typingStates.back());
         _typingStates.pop_back();
         if (_typingStatesData.size() > 0){
             if (_typingStatesData[0] == KEY_SPACE) {
@@ -442,7 +427,7 @@ void restoreLastTypingState() {
                 _index = 0;
             } else if (std::find(_charKeyCode.begin(), _charKeyCode.end(), (Uint16)_typingStatesData[0]) != _charKeyCode.end()) {
                 _index = 0;
-                _specialChar = _typingStatesData;
+                _specialChar = std::move(_typingStatesData);
                 checkSpelling();
             } else {
                 for (i = 0; i < _typingStatesData.size(); i++) {
@@ -537,18 +522,20 @@ Uint32 getCharacterCode(const Uint32& data) {
         } else if (data & TONEW_MASK) {
             key |= TONEW_MASK;
         }
-        if (_codeTable[vCodeTable].find(key) == _codeTable[vCodeTable].end())
+        const auto entry = _codeTable[vCodeTable].find(key);
+        if (entry == _codeTable[vCodeTable].end())
             return data; //not found
         
-        return _codeTable[vCodeTable][key][markElem] | CHAR_CODE_MASK;
+        return entry->second[markElem] | CHAR_CODE_MASK;
     } else { //doesn't has mark
-        if (_codeTable[vCodeTable].find(key) == _codeTable[vCodeTable].end())
+        const auto entry = _codeTable[vCodeTable].find(key);
+        if (entry == _codeTable[vCodeTable].end())
             return data; //not found
         
         if (data & TONE_MASK) {
-            return _codeTable[vCodeTable][key][capsElem] | CHAR_CODE_MASK;
+            return entry->second[capsElem] | CHAR_CODE_MASK;
         } else if (data & TONEW_MASK) {
-            return _codeTable[vCodeTable][key][capsElem + 2] | CHAR_CODE_MASK;
+            return entry->second[capsElem + 2] | CHAR_CODE_MASK;
         } else {
             return data; //not found
         }
@@ -993,7 +980,7 @@ void reverseLastStandaloneChar(const Uint32& keyCode, const bool& isCaps) {
 }
 
 void checkForStandaloneChar(const Uint16& data, const bool& isCaps, const Uint32& keyWillReverse) {
-    if (CHR(_index - 1) == keyWillReverse && TypingWord[_index - 1] & TONEW_MASK) {
+    if (_index > 0 && CHR(_index - 1) == keyWillReverse && TypingWord[_index - 1] & TONEW_MASK) {
         hCode = vWillProcess;
         hBPC = 1;
         hNCC = 1;
@@ -1236,13 +1223,15 @@ void vTempOffEngine(const bool& off) {
 
 bool checkQuickConsonant() {
     if (_index <= 1) return false;
+    // Initial and final consonants can each add one character to the fixed output buffer.
+    if (_index > MAX_BUFF - 2) return false;
     l = 0;
     if (_index > 0) {
         if (vQuickStartConsonant && _quickStartConsonant.find(CHR(0)) != _quickStartConsonant.end()) {
             hCode = vRestore;
             hBPC = _index;
             hNCC = _index + 1;
-            if (_index < MAX_BUFF-1)
+            if (_index < MAX_BUFF)
                 _index++;
             //right shift
             for (i = _index-1; i >= 2; i--) {
@@ -1262,7 +1251,7 @@ bool checkQuickConsonant() {
                 hBPC = 1;
                 hNCC = 2;
             }
-            if (_index < MAX_BUFF-1)
+            if (_index < MAX_BUFF)
                 _index++;
             TypingWord[_index-1] = _quickEndConsonant[CHR(_index-2)][1] | (TypingWord[_index-2] & CAPS_MASK ? CAPS_MASK : 0);
             TypingWord[_index-2] = _quickEndConsonant[CHR(_index-2)][0] | (TypingWord[_index-2] & CAPS_MASK ? CAPS_MASK : 0);

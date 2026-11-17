@@ -173,13 +173,15 @@ extern AppDelegate* appDelegate;
 }
 
 - (IBAction)onConvertButton:(id)sender {
-    if ([OpenKeyManager quickConvert]) {
-        if (!convertToolDontAlertWhenCompleted) {
-            [OpenKeyManager showMessage: self.view.window message:@"Chuyển mã thành công!" subMsg:@"Kết quả đã được lưu trong clipboard."];
+    [OpenKeyManager quickConvert:^(BOOL success) {
+        if (success) {
+            if (!convertToolDontAlertWhenCompleted) {
+                [OpenKeyManager showMessage:self.view.window message:@"Chuyển mã thành công!" subMsg:@"Kết quả đã được lưu trong clipboard."];
+            }
+        } else {
+            [OpenKeyManager showMessage:self.view.window message:@"Không thể chuyển mã!" subMsg:@"Clipboard trống, đã thay đổi hoặc dữ liệu không hợp lệ."];
         }
-    } else {
-        [OpenKeyManager showMessage: self.view.window message:@"Không có dữ liệu trong clipboard!" subMsg:@"Hãy sao chép một đoạn text để chuyển đổi!"];
-    }
+    }];
 }
 
 - (IBAction)onOKButton:(id)sender {

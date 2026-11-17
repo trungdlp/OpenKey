@@ -80,6 +80,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 	case WM_CREATE:
 		taskbarCreated = RegisterWindowMessage(_T("TaskbarCreated"));
 		break;
+	case WM_APP_QUICK_CONVERT:
+		AppDelegate::getInstance()->onQuickConvert();
+		break;
+	case WM_APP_CONVERT_COMPLETED:
+		AppDelegate::getInstance()->onQuickConvertCompleted(wParam != 0, reinterpret_cast<HWND>(lParam));
+		break;
 	case WM_USER+2019:
 		AppDelegate::getInstance()->onControlPanel();
 		break;
@@ -363,4 +369,7 @@ void SystemTrayHelper::createSystemTrayIcon(const HINSTANCE& hIns) {
 
 void SystemTrayHelper::removeSystemTray() {
 	Shell_NotifyIcon(NIM_DELETE, &nid);
+}
+HWND SystemTrayHelper::getWindow() {
+	return nid.hWnd;
 }

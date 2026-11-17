@@ -85,6 +85,7 @@ BYTE * OpenKeyHelper::getRegBinary(LPCTSTR key, DWORD& outSize) {
 	if (ERROR_SUCCESS != RegQueryValueEx(hKey, key, 0, 0, _regData, &size)) {
 		delete[] _regData;
 		_regData = NULL;
+		size = 0;
 	}
 	outSize = size;
 	RegCloseKey(hKey);
@@ -163,97 +164,86 @@ wstring OpenKeyHelper::getFullPath() {
 	return rs;
 }
 
+template<typename Char>
+static bool readClipboardString(UINT format, std::basic_string<Char>& text) {
+	HANDLE data = GetClipboardData(format);
+	if (!data) return false;
+	const size_t capacity = GlobalSize(data) / sizeof(Char);
+	const Char* chars = static_cast<const Char*>(GlobalLock(data));
+	if (!chars) return false;
+	size_t length = 0;
+	while (length < capacity && chars[length]) length++;
+	if (length < capacity) text.assign(chars, length);
+	GlobalUnlock(data);
+	return length < capacity;
+}
+
 wstring OpenKeyHelper::getClipboardText(const int& type) {
-	// Try opening the clipboard
-	if (!OpenClipboard(nullptr)) {
-		return _T("");
-	}
-
-	// Get handle of clipboard object for ANSI text
-	HANDLE hData = GetClipboardData(type);
-	if (hData == nullptr) {
-		return _T("");
-	}
-
-	// Lock the handle to get the actual text pointer
-	wchar_t * pszText = static_cast<wchar_t*>(GlobalLock(hData));
-	if (pszText == nullptr) {
-		return _T("");
-	}
-
-	// Save text in a string class instance
-	wstring text(pszText);
-	
-	// Release the lock
-	GlobalUnlock(hData);
-
-	// Release the clipboard
+	if (!OpenClipboard(NULL)) return L"";
+	wstring text;
+	readClipboardString(type, text);
 	CloseClipboard();
-	
 	return text;
 }
 
-void OpenKeyHelper::setClipboardText(LPCTSTR data, const int & len, const int& type) {
-	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, len * sizeof(WCHAR));
-	memcpy(GlobalLock(hMem), data, len * sizeof(WCHAR));
-	GlobalUnlock(hMem);
-	OpenClipboard(0);
-	EmptyClipboard();
-	SetClipboardData(type, hMem);
+bool OpenKeyHelper::setClipboardText(LPCTSTR data, const int& len, const int& type) {
+	if (!data || len <= 0) return false;
+	HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, len * sizeof(WCHAR));
+	if (!memory) return false;
+	void* destination = GlobalLock(memory);
+	if (!destination) { GlobalFree(memory); return false; }
+	memcpy(destination, data, len * sizeof(WCHAR));
+	GlobalUnlock(memory);
+	if (!OpenClipboard(SystemTrayHelper::getWindow())) { GlobalFree(memory); return false; }
+	const bool success = EmptyClipboard() && SetClipboardData(type, memory);
 	CloseClipboard();
+	if (!success) GlobalFree(memory);
+	return success;
 }
 
-bool OpenKeyHelper::quickConvert() {
-	//read data from clipboard
-	//support Unicode raw string, Rich Text Format and HTML
-
-	if (!OpenClipboard(nullptr)) {
-		return false;
-	}
-
-	string dataHTML, dataRTF;
-	wstring dataUnicode;
-
-	char* pHTML = 0, pRTF = 0;
-	wchar_t* pUnicode = 0;
-
-	//HTML
-	HANDLE hData = GetClipboardData(CF_HTML);
-	if (hData) {
-		pHTML = static_cast<char*>(GlobalLock(hData));
-		GlobalUnlock(hData);
-	}
-	if (pHTML) {
-		dataHTML = pHTML;
-		dataHTML = convertUtil(dataHTML);
-	}
-
-	//UNICODE
-	hData = GetClipboardData(CF_UNICODETEXT);
-	if (hData) {
-		pUnicode = static_cast<wchar_t*>(GlobalLock(hData));
-		GlobalUnlock(hData);
-	}
-	if (pUnicode) {
-		dataUnicode = pUnicode;
-		dataUnicode = utf8ToWideString(convertUtil(wideStringToUtf8(dataUnicode)));
-	}
-
-	OpenClipboard(0);
-	EmptyClipboard();
-
-	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (int)(dataHTML.size() + 1) * sizeof(char));
-	memcpy(GlobalLock(hMem), dataHTML.c_str(), (int)(dataHTML.size() + 1) * sizeof(char));
-	GlobalUnlock(hMem);
-	SetClipboardData(CF_HTML, hMem);
-
-	hMem = GlobalAlloc(GMEM_MOVEABLE, (int)(dataUnicode.size() + 1) * sizeof(wchar_t));
-	memcpy(GlobalLock(hMem), dataUnicode.c_str(), (int)(dataUnicode.size() + 1) * sizeof(wchar_t));
-	GlobalUnlock(hMem);
-	SetClipboardData(CF_UNICODETEXT, hMem);
-
+bool OpenKeyHelper::quickConvert(const ConvertOptions& options, HWND owner) {
+	if (!OpenClipboard(owner)) return false;
+	const DWORD sequence = GetClipboardSequenceNumber();
+	const bool hasHTML = IsClipboardFormatAvailable(CF_HTML) != FALSE;
+	const bool hasUnicode = IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
+	string html;
+	wstring unicode;
+	const bool valid = (hasHTML || hasUnicode) && (!hasHTML || readClipboardString(CF_HTML, html)) &&
+		(!hasUnicode || readClipboardString(CF_UNICODETEXT, unicode));
 	CloseClipboard();
-	return true;
+	if (!valid) return false;
+	if (hasHTML) html = convertUtil(html, options);
+	if (hasUnicode) unicode = utf8ToWideString(convertUtil(wideStringToUtf8(unicode), options));
+
+	auto allocate = [](const void* data, size_t bytes) -> HGLOBAL {
+		HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+		if (!memory) return NULL;
+		void* destination = GlobalLock(memory);
+		if (!destination) { GlobalFree(memory); return NULL; }
+		memcpy(destination, data, bytes);
+		GlobalUnlock(memory);
+		return memory;
+	};
+	HGLOBAL htmlMemory = hasHTML ? allocate(html.c_str(), html.size() + 1) : NULL;
+	HGLOBAL unicodeMemory = hasUnicode ? allocate(unicode.c_str(), (unicode.size() + 1) * sizeof(wchar_t)) : NULL;
+	bool success = false;
+	if ((!hasHTML || htmlMemory) && (!hasUnicode || unicodeMemory) && OpenClipboard(owner)) {
+		if (GetClipboardSequenceNumber() == sequence && EmptyClipboard()) {
+			success = true;
+			if (htmlMemory) {
+				if (SetClipboardData(CF_HTML, htmlMemory)) htmlMemory = NULL;
+				else success = false;
+			}
+			if (unicodeMemory) {
+				if (SetClipboardData(CF_UNICODETEXT, unicodeMemory)) unicodeMemory = NULL;
+				else success = false;
+			}
+		}
+		CloseClipboard();
+	}
+	if (htmlMemory) GlobalFree(htmlMemory);
+	if (unicodeMemory) GlobalFree(unicodeMemory);
+	return success;
 }
 
 DWORD OpenKeyHelper::getVersionNumber() {

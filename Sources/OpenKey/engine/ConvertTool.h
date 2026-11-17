@@ -23,6 +23,18 @@ extern Uint8 convertToolFromCode;
 extern Uint8 convertToolToCode;
 extern int convertToolHotKey;
 
+struct ConvertOptions {
+    bool toAllCaps = false;
+    bool toAllNonCaps = false;
+    bool toCapsFirstLetter = false;
+    bool toCapsEachWord = false;
+    bool removeMark = false;
+    Uint8 fromCode = 0;
+    Uint8 toCode = 0;
+};
+
+ConvertOptions getConvertOptions();
+string convertUtil(const string& sourceString, const ConvertOptions& options);
 string convertUtil(const string& sourceString);
 
 #endif /* ConvertTool_h */

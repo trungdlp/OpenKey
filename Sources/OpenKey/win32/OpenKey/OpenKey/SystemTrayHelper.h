@@ -24,6 +24,10 @@ private:
 public:
 	static void createSystemTrayIcon(const HINSTANCE& hIns);
 	static void updateData();
+	static HWND getWindow();
 	static void removeSystemTray();
 };
 
+
+#define WM_APP_QUICK_CONVERT (WM_APP + 1)
+#define WM_APP_CONVERT_COMPLETED (WM_APP + 2)

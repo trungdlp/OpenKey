@@ -9,6 +9,8 @@
 #import <Carbon/Carbon.h>
 #import <Foundation/Foundation.h>
 #import "Engine.h"
+#import "CharacterOutput.h"
+#import "OpenKeyManager.h"
 #import "AppDelegate.h"
 #import "ViewController.h"
 
@@ -17,8 +19,6 @@
                             (_flag & kCGEventFlagMaskAlternate) || (_flag & kCGEventFlagMaskSecondaryFn) || \
                             (_flag & kCGEventFlagMaskNumericPad) || (_flag & kCGEventFlagMaskHelp)
 
-#define DYNA_DATA(macro, pos) (macro ? pData->macroData[pos] : pData->charData[pos])
-#define MAX_UNICODE_STRING  20
 #define EMPTY_HOTKEY 0xFE0000FE
 #define LOAD_DATA(VAR, KEY) VAR = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@#KEY]
 
@@ -69,16 +69,11 @@ extern "C" {
     CGEventFlags _flag, _lastFlag = 0, _privateFlag;
     CGEventTapProxy _proxy;
     
-    Uint16 _newCharString[MAX_UNICODE_STRING];
-    Uint16 _newCharSize;
-    bool _willContinuteSending = false;
-    bool _willSendControlKey = false;
     
     vector<Uint16> _syncKey;
     
     Uint16 _uniChar[2];
-    int _i, _j, _k;
-    Uint32 _tempChar;
+    int _i, _j;
     bool _hasJustUsedHotKey = false;
 
     int _languageTemp = 0; //use for smart switch key
@@ -86,10 +81,24 @@ extern "C" {
     
     NSString* _frontMostApp = @"UnknownApp";
     
+    static bool _inputSourceIsEnglish = true;
+    static bool _observingInputSource = false;
+
+    void inputSourceChanged(CFNotificationCenterRef, void*, CFStringRef, const void*, CFDictionaryRef) {
+        _inputSourceIsEnglish = true;
+        TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+        if (!source) return;
+        CFArrayRef languages = static_cast<CFArrayRef>(TISGetInputSourceProperty(source, kTISPropertyInputSourceLanguages));
+        if (languages && CFArrayGetCount(languages)) {
+            _inputSourceIsEnglish = CFEqual(CFArrayGetValueAtIndex(languages, 0), CFSTR("en"));
+        }
+        CFRelease(source);
+    }
+
     void OpenKeyInit() {
         //load saved data
         vFreeMark = 0;//(int)[[NSUserDefaults standardUserDefaults] integerForKey:@"FreeMark"];
-        LOAD_DATA(vCodeTable, CodeTable); if (vCodeTable < 0) vCodeTable = 0;
+        LOAD_DATA(vCodeTable, CodeTable); if (vCodeTable < 0 || vCodeTable >= 5) vCodeTable = 0;
         LOAD_DATA(vCheckSpelling, Spelling);
         LOAD_DATA(vQuickTelex, QuickTelex);
         LOAD_DATA(vUseModernOrthography, ModernOrthography);
@@ -114,6 +123,16 @@ extern "C" {
         
         LOAD_DATA(vPerformLayoutCompat, vPerformLayoutCompat);
         
+        if (!_observingInputSource) {
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(), &_inputSourceIsEnglish,
+                                            inputSourceChanged, kTISNotifySelectedKeyboardInputSourceChanged,
+                                            NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+            _observingInputSource = true;
+        }
+        inputSourceChanged(NULL, NULL, NULL, NULL, NULL);
+        if (eventBackSpaceDown) CFRelease(eventBackSpaceDown);
+        if (eventBackSpaceUp) CFRelease(eventBackSpaceUp);
+        if (myEventSource) CFRelease(myEventSource);
         myEventSource = CGEventSourceCreate(kCGEventSourceStatePrivate);
         pData = (vKeyHookState*)vKeyInit();
 
@@ -162,10 +181,45 @@ extern "C" {
         }
     }
     
-    NSString* ConvertUtil(NSString* str) {
-        return [NSString stringWithUTF8String:convertUtil([str UTF8String]).c_str()];
+    void QuickConvert(void (^completion)(BOOL)) {
+        static bool busy = false;
+        if (busy) return;
+        NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+        const NSInteger changeCount = pasteboard.changeCount;
+        NSString* html = [pasteboard stringForType:NSPasteboardTypeHTML];
+        NSString* plain = [pasteboard stringForType:NSPasteboardTypeString];
+        if ((!html && !plain) || pasteboard.changeCount != changeCount) {
+            completion(NO);
+            return;
+        }
+        const ConvertOptions options = getConvertOptions();
+        busy = true;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            @autoreleasepool {
+                NSString* convertedHTML = nil;
+                NSString* convertedPlain = nil;
+                bool valid = true;
+                try {
+                    if (html) convertedHTML = [NSString stringWithUTF8String:convertUtil(html.UTF8String, options).c_str()];
+                    if (plain) convertedPlain = [NSString stringWithUTF8String:convertUtil(plain.UTF8String, options).c_str()];
+                    valid = (!html || convertedHTML) && (!plain || convertedPlain);
+                } catch (const std::exception&) {
+                    valid = false;
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    BOOL success = valid && pasteboard.changeCount == changeCount;
+                    if (success) {
+                        [pasteboard clearContents];
+                        if (convertedHTML) success &= [pasteboard setString:convertedHTML forType:NSPasteboardTypeHTML];
+                        if (convertedPlain) success &= [pasteboard setString:convertedPlain forType:NSPasteboardTypeString];
+                    }
+                    busy = false;
+                    completion(success);
+                });
+            }
+        });
     }
-    
+
     BOOL containUnicodeCompoundApp(NSString* topApp) {
         if (topApp == nil) return false;
         for (_j = 0; _j < [_unicodeCompoundApp count]; _j++) {
@@ -186,17 +240,6 @@ extern "C" {
         return false;
     }
 
-    BOOL shouldUseRecommendWorkaround(NSString* topApp) {
-        if (!vFixRecommendBrowser) return false;
-        if (isSpotlightVisible()) return false;
-        if (topApp == nil) return true;
-        return ![_recommendWorkaroundDisabledApp containsObject:topApp];
-    }
-
-    BOOL shouldUseSelectionReplacement(NSString* topApp) {
-        return isSpotlightVisible() || [_recommendWorkaroundDisabledApp containsObject:topApp];
-    }
-    
     void saveSmartSwitchKeyData() {
         getSmartSwitchKeySaveData(savedSmartSwitchKeyData);
         NSData* _data = [NSData dataWithBytes:savedSmartSwitchKeyData.data() length:savedSmartSwitchKeyData.size()];
@@ -370,7 +413,7 @@ extern "C" {
         CGEventTapPostEvent(_proxy, eventBackSpaceDown);
         CGEventTapPostEvent(_proxy, eventBackSpaceUp);
         
-        if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
+        if (IS_DOUBLE_CODE(vCodeTable) && !_syncKey.empty()) { //VNI or Unicode Compound
             if (_syncKey.back() > 1) {
                 if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
                     CGEventTapPostEvent(_proxy, eventBackSpaceDown);
@@ -392,7 +435,7 @@ extern "C" {
         CGEventTapPostEvent(_proxy, eventVkeyDown);
         CGEventTapPostEvent(_proxy, eventVkeyUp);
         
-        if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
+        if (IS_DOUBLE_CODE(vCodeTable) && !_syncKey.empty()) { //VNI or Unicode Compound
             if (_syncKey.back() > 1) {
                 if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
                     CGEventTapPostEvent(_proxy, eventVkeyDown);
@@ -420,98 +463,41 @@ extern "C" {
         CFRelease(eventVkeyUp);
     }
     
-    void SendNewCharString(const bool& dataFromMacro=false, const Uint16& offset=0) {
-        _j = 0;
-        _newCharSize = dataFromMacro ? pData->macroData.size() : pData->newCharCount;
-        _willContinuteSending = false;
-        _willSendControlKey = false;
-        
-        if (_newCharSize > 0) {
-            for (_k = dataFromMacro ? offset : pData->newCharCount - 1 - offset;
-                 dataFromMacro ? _k < pData->macroData.size() : _k >= 0;
-                 dataFromMacro ? _k++ : _k--) {
-                
-                if (_j >= 16) {
-                    _willContinuteSending = true;
-                    break;
-                }
-                
-                _tempChar = DYNA_DATA(dataFromMacro, _k);
-                if (_tempChar & PURE_CHARACTER_MASK) {
-                    _newCharString[_j++] = _tempChar;
-                    if (IS_DOUBLE_CODE(vCodeTable)) {
-                        InsertKeyLength(1);
-                    }
-                } else if (!(_tempChar & CHAR_CODE_MASK)) {
-                    if (IS_DOUBLE_CODE(vCodeTable)) //VNI
-                        InsertKeyLength(1);
-                    _newCharString[_j++] = keyCodeToCharacter(_tempChar);
-                } else {
-                    if (vCodeTable == 0) {  //unicode 2 bytes code
-                        _newCharString[_j++] = _tempChar;
-                    } else if (vCodeTable == 1 || vCodeTable == 2 || vCodeTable == 4) { //others such as VNI Windows, TCVN3: 1 byte code
-                        _newChar = _tempChar;
-                        _newCharHi = HIBYTE(_newChar);
-                        _newChar = LOBYTE(_newChar);
-                        _newCharString[_j++] = _newChar;
-                        
-                        if (_newCharHi > 32) {
-                            if (vCodeTable == 2) //VNI
-                                InsertKeyLength(2);
-                            _newCharString[_j++] = _newCharHi;
-                            _newCharSize++;
-                        } else {
-                            if (vCodeTable == 2) //VNI
-                                InsertKeyLength(1);
-                        }
-                    } else if (vCodeTable == 3) { //Unicode Compound
-                        _newChar = _tempChar;
-                        _newCharHi = (_newChar >> 13);
-                        _newChar &= 0x1FFF;
-                        
-                        InsertKeyLength(_newCharHi > 0 ? 2 : 1);
-                        _newCharString[_j++] = _newChar;
-                        if (_newCharHi > 0) {
-                            _newCharSize++;
-                            _newCharString[_j++] = _unicodeCompoundMark[_newCharHi - 1];
-                        }
-                        
-                    }
-                }
-            }//end for
+    void SendNewCharString(const bool& dataFromMacro=false) {
+        Uint16 buffer[16];
+        size_t length = 0;
+        auto flush = [&] {
+            if (!length) return;
+            CGEventRef down = CGEventCreateKeyboardEvent(myEventSource, 0, true);
+            CGEventRef up = CGEventCreateKeyboardEvent(myEventSource, 0, false);
+            CGEventKeyboardSetUnicodeString(down, length, buffer);
+            CGEventKeyboardSetUnicodeString(up, length, buffer);
+            CGEventTapPostEvent(_proxy, down);
+            CGEventTapPostEvent(_proxy, up);
+            CFRelease(down);
+            CFRelease(up);
+            length = 0;
+        };
+        auto append = [&](Uint32 data) {
+            Uint16 units[2];
+            const size_t count = getCharacterUnits(data, vCodeTable, units);
+            if (length + count > 16 || (length == 15 && units[0] >= 0xD800 && units[0] <= 0xDBFF)) flush();
+            for (size_t n = 0; n < count; n++) buffer[length++] = units[n];
+            if (IS_DOUBLE_CODE(vCodeTable)) InsertKeyLength(count);
+        };
+        const size_t count = dataFromMacro ? pData->macroData.size() : pData->newCharCount;
+        for (size_t pos = 0; pos < count; pos++) {
+            append(dataFromMacro ? pData->macroData[pos] : pData->charData[count - 1 - pos]);
         }
-        
-        if (!_willContinuteSending && (pData->code == vRestore || pData->code == vRestoreAndStartNewSession)) { //if is restore
-            if (keyCodeToCharacter(_keycode) != 0) {
-                _newCharSize++;
-                _newCharString[_j++] = keyCodeToCharacter(_keycode | ((_flag & kCGEventFlagMaskAlphaShift) || (_flag & kCGEventFlagMaskShift) ? CAPS_MASK : 0));
-            } else {
-                _willSendControlKey = true;
-            }
-        }
-        if (!_willContinuteSending && pData->code == vRestoreAndStartNewSession) {
-            startNewSession();
-        }
-        
-        _newEventDown = CGEventCreateKeyboardEvent(myEventSource, 0, true);
-        _newEventUp = CGEventCreateKeyboardEvent(myEventSource, 0, false);
-        CGEventKeyboardSetUnicodeString(_newEventDown, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
-        CGEventKeyboardSetUnicodeString(_newEventUp, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
-        CGEventTapPostEvent(_proxy, _newEventDown);
-        CGEventTapPostEvent(_proxy, _newEventUp);
-        CFRelease(_newEventDown);
-        CFRelease(_newEventUp);
-
-        if (_willContinuteSending) {
-            SendNewCharString(dataFromMacro, dataFromMacro ? _k : 16);
-        }
-        
-        //the case when hCode is vRestore or vRestoreAndStartNewSession, the word is invalid and last key is control key such as TAB, LEFT ARROW, RIGHT ARROW,...
-        if (_willSendControlKey) {
-            SendKeyCode(_keycode);
-        }
+        const bool restore = pData->code == vRestore || pData->code == vRestoreAndStartNewSession;
+        const Uint32 original = _keycode | ((_flag & kCGEventFlagMaskAlphaShift) || (_flag & kCGEventFlagMaskShift) ? CAPS_MASK : 0);
+        const bool controlKey = restore && !keyCodeToCharacter(original);
+        if (restore && !controlKey) append(original);
+        flush();
+        if (pData->code == vRestoreAndStartNewSession) startNewSession();
+        if (controlKey) SendKeyCode(_keycode);
     }
-            
+
     bool checkHotKey(int hotKeyData, bool checkKeyCode=true) {
         if ((hotKeyData & (~0x8000)) == EMPTY_HOTKEY)
             return false;
@@ -543,14 +529,16 @@ extern "C" {
     
     void handleMacro() {
         //fix autocomplete
-        if (shouldUseRecommendWorkaround(FRONT_APP)) {
+        NSString* frontApp = FRONT_APP;
+        size_t backspaces = pData->backspaceCount;
+        if (vFixRecommendBrowser && ![_recommendWorkaroundDisabledApp containsObject:frontApp] && !isSpotlightVisible()) {
             SendEmptyCharacter();
-            pData->backspaceCount++;
+            backspaces++;
         }
         
         //send backspace
-        if (pData->backspaceCount > 0) {
-            for (int i = 0; i < pData->backspaceCount; i++) {
+        if (backspaces > 0) {
+            for (size_t i = 0; i < backspaces; i++) {
                 SendBackspace();
             }
         }
@@ -599,6 +587,10 @@ extern "C" {
      * MAIN Callback.
      */
     CGEventRef OpenKeyCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
+        if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+            [OpenKeyManager resumeEventTap];
+            return event;
+        }
         //dont handle my event
         if (CGEventGetIntegerValueField(event, kCGEventSourceStateID) == CGEventSourceGetSourceStateID(myEventSource)) {
             return event;
@@ -624,7 +616,7 @@ extern "C" {
                     return NULL;
                 }
                 if (GET_SWITCH_KEY(convertToolHotKey) == _keycode && checkHotKey(convertToolHotKey, GET_SWITCH_KEY(convertToolHotKey) != 0xFE)){
-                    [appDelegate onQuickConvert];
+                    dispatch_async(dispatch_get_main_queue(), ^{ [appDelegate onQuickConvert]; });
                     _lastFlag = 0;
                     _hasJustUsedHotKey = true;
                     return NULL;
@@ -644,7 +636,7 @@ extern "C" {
                 }
                 if (checkHotKey(convertToolHotKey, GET_SWITCH_KEY(convertToolHotKey) != 0xFE)) {
                     _lastFlag = 0;
-                    [appDelegate onQuickConvert];
+                    dispatch_async(dispatch_get_main_queue(), ^{ [appDelegate onQuickConvert]; });
                     _hasJustUsedHotKey = true;
                     return NULL;
                 }
@@ -690,25 +682,8 @@ extern "C" {
             return event;
         }
 
-        //if "turn off Vietnamese when in other language" mode on
-        if(vOtherLanguage){
-            TISInputSourceRef isource = TISCopyCurrentKeyboardInputSource();
-            if ( isource != NULL )
-            {
-                CFArrayRef languages = (CFArrayRef) TISGetInputSourceProperty(isource, kTISPropertyInputSourceLanguages);
-                
-                if (CFArrayGetCount(languages) > 0) {
-                    CFStringRef langRef = (CFStringRef)CFArrayGetValueAtIndex(languages, 0);
-                    NSString *currentLanguage = (__bridge NSString *)langRef;
-                    if(![currentLanguage isLike:@"en"]){
-                        return event;
-                    }
-                    CFRelease(langRef);
-                    CFRelease(isource);
-                }
-            }
-        }
-        
+        if (vOtherLanguage && !_inputSourceIsEnglish) return event;
+
         //handle keyboard
         if (type == kCGEventKeyDown) {
             //send event signal to Engine
@@ -738,9 +713,12 @@ extern "C" {
                 return event;
             } else if (pData->code == vWillProcess || pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //handle result signal
                 
+                NSString* frontApp = FRONT_APP;
+                const bool needSpotlight = pData->backspaceCount > 0 || (vFixRecommendBrowser && pData->extCode != 4);
+                const bool selection = [_recommendWorkaroundDisabledApp containsObject:frontApp] || (needSpotlight && isSpotlightVisible());
                 //fix autocomplete
-                if (shouldUseRecommendWorkaround(FRONT_APP) && pData->extCode != 4) {
-                    if (vFixChromiumBrowser && [_unicodeCompoundApp containsObject:FRONT_APP]) {
+                if (vFixRecommendBrowser && pData->extCode != 4 && !selection) {
+                    if (vFixChromiumBrowser && [_unicodeCompoundApp containsObject:frontApp]) {
                         if (pData->backspaceCount > 0) {
                             SendShiftAndLeftArrow();
                             if (pData->backspaceCount == 1)
@@ -753,7 +731,7 @@ extern "C" {
                     }
                 }
 
-                if (shouldUseSelectionReplacement(FRONT_APP) && pData->backspaceCount > 0) {
+                if (selection && pData->backspaceCount > 0) {
                     for (_i = 0; _i < pData->backspaceCount; _i++) {
                         SendShiftAndLeftArrow();
                     }

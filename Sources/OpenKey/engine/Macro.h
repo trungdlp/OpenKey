@@ -25,7 +25,7 @@ struct MacroData {
 /**
  * Call when you need to load macro data from disk
  */
-void initMacroMap(const Byte* pData, const int& size);
+bool initMacroMap(const Byte* pData, const int& size);
 
 /**
  * convert all macro data to save on disk
