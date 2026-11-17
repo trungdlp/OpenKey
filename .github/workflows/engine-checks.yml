@@ -2,15 +2,20 @@ name: Engine checks
 
 on:
   push:
-    branches: [master, 'trduong/**']
+    branches: [master]
   pull_request:
     branches: [master]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   regressions:
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -27,12 +32,14 @@ jobs:
 
   macos-build:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build native macOS app
         run: xcodebuild -project Sources/OpenKey/macOS/OpenKey.xcodeproj -scheme OpenKey -configuration Release -derivedDataPath build/macOS CODE_SIGNING_ALLOWED=NO build
 
   coverage:
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
