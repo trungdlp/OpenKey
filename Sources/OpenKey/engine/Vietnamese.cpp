@@ -7,6 +7,8 @@
 //
 
 #include "Vietnamese.h"
+#include <array>
+#include <unordered_map>
 #include "iostream"
 using namespace std;
 
@@ -556,21 +558,36 @@ map<Uint32, Uint32> _characterMap = {
     {' ', KEY_SPACE}
 };
 
-map<Uint32, Uint32> _keyCodeToChar;
-
-void initKeyCodeToChar() {
-    _keyCodeToChar.clear();
-    for (std::map<Uint32, Uint32>::iterator it = _characterMap.begin(); it != _characterMap.end(); ++it) {
-        _keyCodeToChar[it->second] = it->first;
-    }
+bool findCharacter(Uint16 character, Uint8 table, Uint32& key, size_t& index) {
+    using Entry = pair<Uint32, size_t>;
+    static const auto reverse = [] {
+        array<unordered_map<Uint16, Entry>, 5> result;
+        for (size_t code = 0; code < result.size(); code++) {
+            for (const auto& entry : _codeTable[code]) {
+                for (size_t pos = 0; pos < entry.second.size(); pos++) {
+                    if (entry.second[pos]) result[code].emplace(entry.second[pos], Entry(entry.first, pos));
+                }
+            }
+        }
+        return result;
+    }();
+    if (table >= reverse.size()) return false;
+    const auto entry = reverse[table].find(character);
+    if (entry == reverse[table].end()) return false;
+    key = entry->second.first;
+    index = entry->second.second;
+    return true;
 }
 
 Uint16 keyCodeToCharacter(const Uint32& keyCode) {
-    if (_keyCodeToChar.size() == 0) { //init data if it is empty
-        initKeyCodeToChar();
-    }
-    if (_keyCodeToChar.find(keyCode) != _keyCodeToChar.end()) {
-        return _keyCodeToChar[keyCode];
+    static const auto _keyCodeToChar = [] {
+        map<Uint32, Uint32> result;
+        for (const auto& entry : _characterMap) result[entry.second] = entry.first;
+        return result;
+    }();
+    const auto entry = _keyCodeToChar.find(keyCode);
+    if (entry != _keyCodeToChar.end()) {
+        return entry->second;
     }
     return 0;
 }

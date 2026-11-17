@@ -18,6 +18,8 @@ redistribute your new version, it MUST be open source.
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <regex>
+#include "UpdateInstaller.h"
 #pragma comment(lib, "Urlmon.lib")
 
 using namespace std;
@@ -72,19 +74,22 @@ INT_PTR CALLBACK MainDialogProcess(HWND hDlg, UINT message, WPARAM wParam, LPARA
 }
 
 DWORD WINAPI UpdateThreadFunction(LPVOID lpParam) {
-	WCHAR path[MAX_PATH];
 	WCHAR currentDir[MAX_PATH];
-	GetCurrentDirectory(MAX_PATH, currentDir);
-	wsprintf(path, TEXT("%s\\_OpenKey.tempf"), currentDir);
-	HRESULT res = URLDownloadToFile(NULL, L"https://raw.githubusercontent.com/tuyenvm/OpenKey/master/version.json", path, 0, NULL);
+	const DWORD pathLength = GetModuleFileNameW(NULL, currentDir, MAX_PATH);
+	if (!pathLength || pathLength >= MAX_PATH) return 1;
+	wchar_t* separator = wcsrchr(currentDir, L'\\');
+	if (!separator) return 1;
+	*separator = 0;
+	const wstring path = wstring(currentDir) + L"\\_OpenKey.tempf";
+	HRESULT res = URLDownloadToFile(NULL, L"https://raw.githubusercontent.com/tuyenvm/OpenKey/master/version.json", path.c_str(), 0, NULL);
 
 	wstring data;
 	if (res == S_OK) {
-		std::wifstream t(path);
+		std::wifstream t(path.c_str());
 		std::wstringstream buffer;
 		buffer << t.rdbuf();
 		t.close();
-		DeleteFile(path);
+		DeleteFile(path.c_str());
 		data = buffer.str();
 	} else {
 		MessageBox(hDlg, _T("Có lỗi trong quá trình cập nhật, vui lòng thử lại sau!"), _T("OpenKey Update"), MB_OK);
@@ -92,40 +97,59 @@ DWORD WINAPI UpdateThreadFunction(LPVOID lpParam) {
 		return 0;
 	}
 
-	//simple parse
-	data = data.substr(data.find(L"latestWinVersion"));
-	data = data.substr(data.find(L"\"versionName\":"));
-	data = data.substr(14);
-	data = data.substr(data.find(L"\""));
-	data = data.substr(1);
-	wstring versionName = data.substr(0, data.find(L"\""));
-	
-	//download zip file
-	WCHAR updateUrl[MAX_PATH];
-	wsprintf(updateUrl, TEXT("https://github.com/tuyenvm/OpenKey/releases/download/%s/OpenKey%s-Windows.zip"),
-		versionName.c_str(),
-		versionName.c_str());
-	wsprintf(path, TEXT("%s\\_OpenKeyUpdate.zip"), currentDir);
-	res = URLDownloadToFile(NULL, updateUrl, path, 0, NULL);
-
-	if (res == S_OK) {
-		//remove old file
-		DeleteFile(L"OpenKey64.exe");
-		//extract zip file
-		WinExec("powershell.exe -NoP -NonI -Command \"Expand-Archive '.\\_OpenKeyUpdate.zip' '.\\_OpenKeyUpdate'\" ", SW_HIDE);
-		Sleep(5000);
-		MoveFile(L"_OpenKeyUpdate\\OpenKey64.exe", L"OpenKey64.exe");
-		DeleteFile(path);
-		DeleteFile(L"_OpenKeyUpdate\\OpenKeyUpdate.exe");
-		DeleteFile(L"_OpenKeyUpdate\\OpenKey64.exe");
-		DeleteFile(L"_OpenKeyUpdate\\OpenKey32.exe");
-		RemoveDirectory(L".\\_OpenKeyUpdate");
-		MessageBox(hDlg, _T("Bạn đã cập nhật OpenKey bản mới nhất thành công!"), _T("OpenKey Update"), MB_OK);
-		ExitProcess(0);
-	} else {
-		MessageBox(hDlg, _T("Có lỗi trong quá trình cập nhật, vui lòng thử lại sau!"), _T("OpenKey Update"), MB_OK);
-		ExitProcess(0);
+	std::wsmatch match;
+	const std::wregex versionPattern(LR"pattern("latestWinVersion"\s*:\s*\{[^}]*"versionName"\s*:\s*"([A-Za-z0-9._-]+)")pattern");
+	if (!std::regex_search(data, match, versionPattern)) {
+		MessageBox(hDlg, _T("Dữ liệu phiên bản không hợp lệ. Bản hiện tại được giữ nguyên."), _T("OpenKey Update"), MB_OK);
+		ExitProcess(1);
 	}
+	const wstring versionName = match[1].str();
+	WCHAR stagingPath[MAX_PATH];
+	if (!GetTempFileNameW(currentDir, L"OKU", 0, stagingPath)) return 1;
+	DeleteFileW(stagingPath);
+	if (!CreateDirectoryW(stagingPath, NULL)) return 1;
+	const wstring staging = stagingPath;
+	const wstring archive = staging + L"\\update.zip";
+	const wstring extracted = staging + L"\\files";
+
+	//download zip file
+	const wstring updateUrl = L"https://github.com/tuyenvm/OpenKey/releases/download/" + versionName + L"/OpenKey" + versionName + L"-Windows.zip";
+	res = URLDownloadToFile(NULL, updateUrl.c_str(), archive.c_str(), 0, NULL);
+
+	bool updated = false;
+	if (res == S_OK) {
+		auto quote = [](const wstring& value) {
+			wstring quoted = L"'";
+			for (wchar_t ch : value) { quoted += ch; if (ch == L'\'') quoted += ch; }
+			return quoted + L"'";
+		};
+		wstring command = L"powershell.exe -NoP -NonI -Command \"Expand-Archive -LiteralPath " +
+			quote(archive) + L" -DestinationPath " + quote(extracted) + L" -Force -ErrorAction Stop\"";
+		STARTUPINFOW startup = {};
+		startup.cb = sizeof(startup);
+		PROCESS_INFORMATION process = {};
+		if (CreateProcessW(NULL, &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, currentDir, &startup, &process)) {
+			DWORD exitCode = 1;
+			if (WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0 &&
+				GetExitCodeProcess(process.hProcess, &exitCode) && exitCode == 0) {
+				updated = installUpdate(currentDir, extracted);
+			}
+			CloseHandle(process.hThread);
+			CloseHandle(process.hProcess);
+		}
+	}
+	if (updated) {
+		DeleteFileW(archive.c_str());
+		for (const wchar_t* file : {L"OpenKey64.exe", L"OpenKey32.exe", L"OpenKeyUpdate.exe"}) {
+			DeleteFileW((extracted + L"\\" + file).c_str());
+		}
+		RemoveDirectoryW(extracted.c_str());
+		RemoveDirectoryW(staging.c_str());
+		MessageBox(hDlg, _T("Bạn đã cập nhật OpenKey bản mới nhất thành công!"), _T("OpenKey Update"), MB_OK);
+	} else {
+		MessageBox(hDlg, _T("Cập nhật thất bại. Bản cũ hoặc bản sao .bak được giữ lại; vui lòng đóng OpenKey và thử lại."), _T("OpenKey Update"), MB_OK);
+	}
+	ExitProcess(updated ? 0 : 1);
 	return 0;
 }
 

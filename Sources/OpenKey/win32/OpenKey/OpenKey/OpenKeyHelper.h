@@ -38,9 +38,9 @@ public:
 	static wstring getFullPath();
 
 	static wstring getClipboardText(const int& type);
-	static void setClipboardText(LPCTSTR data, const int& len, const int& type);
+	static bool setClipboardText(LPCTSTR data, const int& len, const int& type);
 
-	static bool quickConvert();
+	static bool quickConvert(const ConvertOptions& options, HWND owner);
 
 	static DWORD getVersionNumber();
 	static wstring getVersionString();

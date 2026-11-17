@@ -13,6 +13,7 @@ redistribute your new version, it MUST be open source.
 -----------------------------------------------------------*/
 #include "stdafx.h"
 #include "AppDelegate.h"
+#include "../../../engine/CharacterOutput.h"
 
 #pragma comment(lib, "imm32")
 #define IMC_GETOPENSTATUS 0x0005
@@ -26,7 +27,6 @@ redistribute your new version, it MUST be open source.
 #define MASK_SCROLL				0x40
 
 #define OTHER_CONTROL_KEY (_flag & MASK_ALT) || (_flag & MASK_CONTROL)
-#define DYNA_DATA(macro, pos) (macro ? pData->macroData[pos] : pData->charData[pos])
 #define EMPTY_HOTKEY 0xFE0000FE
 
 static vector<string> _chromiumBrowser = {
@@ -51,12 +51,9 @@ static Uint16 _keycode;
 static Uint16 _newChar, _newCharHi;
 
 static vector<Uint16> _newCharString;
-static Uint16 _newCharSize;
-static bool _willSendControlKey = false;
 
 static Uint16 _uniChar[2];
-static int _i, _j, _k;
-static Uint32 _tempChar;
+static int _i;
 
 static string macroText, macroContent;
 static int _languageTemp = 0; //use for smart switch key
@@ -82,6 +79,7 @@ void OpenKeyInit() {
 	APP_GET_DATA(vInputType, 0);
 	vFreeMark = 0;
 	APP_GET_DATA(vCodeTable, 0);
+	if (vCodeTable < 0 || vCodeTable >= 5) vCodeTable = 0;
 	APP_GET_DATA(vCheckSpelling, 1);
 	APP_GET_DATA(vUseModernOrthography, 0);
 	APP_GET_DATA(vQuickTelex, 0);
@@ -266,22 +264,24 @@ static void SendKeyCode(Uint32 data) {
 	}
 }
 
+static void SendMetroBackspace() {
+	if (!vSupportMetroApp || OpenKeyHelper::getLastAppExecuteName() != "ApplicationFrameHost.exe") return;
+	HWND foreground = GetForegroundWindow();
+	GUITHREADINFO info = {};
+	info.cbSize = sizeof(info);
+	GetGUIThreadInfo(GetWindowThreadProcessId(foreground, NULL), &info);
+	HWND target = info.hwndFocus ? info.hwndFocus : foreground;
+	PostMessage(target, WM_CHAR, VK_BACK, 0);
+	PostMessage(target, WM_CHAR, VK_BACK, 0);
+}
+
 static void SendBackspace() {
 	SendInput(2, backspaceEvent, sizeof(INPUT));
-	if (vSupportMetroApp && OpenKeyHelper::getLastAppExecuteName().compare("ApplicationFrameHost.exe") == 0) {//Metro App
-		SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-		SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-	}
-	if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
+	SendMetroBackspace();
+	if (IS_DOUBLE_CODE(vCodeTable) && !_syncKey.empty()) {
 		if (_syncKey.back() > 1) {
-			/*if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
-				SendInput(2, backspaceEvent, sizeof(INPUT));
-			}*/
 			SendInput(2, backspaceEvent, sizeof(INPUT));
-			if (vSupportMetroApp && OpenKeyHelper::getLastAppExecuteName().compare("ApplicationFrameHost.exe") == 0) {//Metro App
-				SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-				SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-			}
+			SendMetroBackspace();
 		}
 		_syncKey.pop_back();
 	}
@@ -299,85 +299,28 @@ static void SendEmptyCharacter() {
 }
 
 static void SendNewCharString(const bool& dataFromMacro = false) {
-	_j = 0;
-	_newCharSize = dataFromMacro ? (Uint16)pData->macroData.size() : pData->newCharCount;
-	if (_newCharString.size() < _newCharSize) {
-		_newCharString.resize(_newCharSize);
-	}
-	_willSendControlKey = false;
-	
-	if (_newCharSize > 0) {
-		for (_k = dataFromMacro ? 0 : pData->newCharCount - 1;
-			dataFromMacro ? _k < pData->macroData.size() : _k >= 0;
-			dataFromMacro ? _k++ : _k--) {
-
-			_tempChar = DYNA_DATA(dataFromMacro, _k);
-			if (_tempChar & PURE_CHARACTER_MASK) {
-				_newCharString[_j++] = _tempChar;
-				if (IS_DOUBLE_CODE(vCodeTable)) {
-					InsertKeyLength(1);
-				}
-			} else if (!(_tempChar & CHAR_CODE_MASK)) {
-				if (IS_DOUBLE_CODE(vCodeTable)) //VNI
-					InsertKeyLength(1);
-				_newCharString[_j++] = keyCodeToCharacter(_tempChar);
-			} else {
-				_newChar = _tempChar;
-				if (vCodeTable == 0) {  //unicode 2 bytes code
-					_newCharString[_j++] = _newChar;
-				} else if (vCodeTable == 1 || vCodeTable == 2 || vCodeTable == 4) { //others such as VNI Windows, TCVN3: 1 byte code
-					_newCharHi = HIBYTE(_newChar);
-					_newChar = LOBYTE(_newChar);
-					_newCharString[_j++] = _newChar;
-
-					if (_newCharHi > 32) {
-						if (vCodeTable == 2) //VNI
-							InsertKeyLength(2);
-						_newCharString[_j++] = _newCharHi;
-						_newCharSize++;
-					}
-					else {
-						if (vCodeTable == 2) //VNI
-							InsertKeyLength(1);
-					}
-				} else if (vCodeTable == 3) { //Unicode Compound
-					_newCharHi = (_newChar >> 13);
-					_newChar &= 0x1FFF;
-
-					InsertKeyLength(_newCharHi > 0 ? 2 : 1);
-					_newCharString[_j++] = _newChar;
-					if (_newCharHi > 0) {
-						_newCharSize++;
-						_newCharString[_j++] = _unicodeCompoundMark[_newCharHi - 1];
-					}
-
-				}
-			}
-		}//end for
-	}
-
-	if (pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //if is restore
-		if (keyCodeToCharacter(_keycode) != 0) {
-			_newCharSize++;
-			_newCharString[_j++] = keyCodeToCharacter(_keycode | ((_flag & MASK_SHIFT) || (_flag & MASK_CAPITAL) ? CAPS_MASK : 0));
-		} else {
-			_willSendControlKey = true;
-		}
-	}
-	if (pData->code == vRestoreAndStartNewSession) {
-		startNewSession();
-	}
-
-	OpenKeyHelper::setClipboardText((LPCTSTR)_newCharString.data(), _newCharSize + 1, CF_UNICODETEXT);
-
-	//Send shift + insert
-	SendCombineKey(KEY_LEFT_SHIFT, VK_INSERT, 0, KEYEVENTF_EXTENDEDKEY);
-	
-	//the case when hCode is vRestore or vRestoreAndStartNewSession,
-	//the word is invalid and last key is control key such as TAB, LEFT ARROW, RIGHT ARROW,...
-	if (_willSendControlKey) {
-		SendKeyCode(_keycode);
-	}
+    _newCharString.clear();
+    const size_t count = dataFromMacro ? pData->macroData.size() : pData->newCharCount;
+    _newCharString.reserve(count * 2 + 2);
+    auto append = [&](Uint32 data) {
+        Uint16 units[2];
+        const size_t length = getCharacterUnits(data, vCodeTable, units);
+        _newCharString.insert(_newCharString.end(), units, units + length);
+        if (IS_DOUBLE_CODE(vCodeTable)) InsertKeyLength(length);
+    };
+    for (size_t pos = 0; pos < count; pos++) {
+        append(dataFromMacro ? pData->macroData[pos] : pData->charData[count - 1 - pos]);
+    }
+    const bool restore = pData->code == vRestore || pData->code == vRestoreAndStartNewSession;
+    const Uint32 original = _keycode | ((_flag & MASK_SHIFT) || (_flag & MASK_CAPITAL) ? CAPS_MASK : 0);
+    const bool controlKey = restore && !keyCodeToCharacter(original);
+    if (restore && !controlKey) append(original);
+    _newCharString.push_back(0);
+    if (OpenKeyHelper::setClipboardText(reinterpret_cast<LPCTSTR>(_newCharString.data()), static_cast<int>(_newCharString.size()), CF_UNICODETEXT)) {
+        SendCombineKey(KEY_LEFT_SHIFT, VK_INSERT, 0, KEYEVENTF_EXTENDEDKEY);
+    }
+    if (pData->code == vRestoreAndStartNewSession) startNewSession();
+    if (controlKey) SendKeyCode(_keycode);
 }
 
 bool checkHotKey(int hotKeyData, bool checkKeyCode = true) {
@@ -428,14 +371,15 @@ static void SendPureCharacter(const Uint16& ch) {
 
 static void handleMacro() {
 	//fix autocomplete
+	size_t backspaces = pData->backspaceCount;
 	if (vFixRecommendBrowser) {
 		SendEmptyCharacter();
-		pData->backspaceCount++;
+		backspaces++;
 	}
 
 	//send backspace
-	if (pData->backspaceCount > 0) {
-		for (int i = 0; i < pData->backspaceCount; i++) {
+	if (backspaces > 0) {
+		for (size_t i = 0; i < backspaces; i++) {
 			SendBackspace();
 		}
 	}
@@ -490,17 +434,10 @@ static bool UnsetModifierMask(const Uint16& vkCode) {
 }
 
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode < 0) return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 	keyboardData = (KBDLLHOOKSTRUCT *)lParam;
 	//ignore my event
 	if (keyboardData->dwExtraInfo != 0) {
-		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
-	}
-	
-	//ignore if IME pad is open when typing Japanese/Chinese...
-	HWND hWnd = GetForegroundWindow();
-	HWND hIME = ImmGetDefaultIMEWnd(hWnd);
-	LRESULT isImeON = SendMessage(hIME, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0);
-	if (isImeON) {
 		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 	}
 	
@@ -527,7 +464,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 				return -1;
 			}
 			if (GET_SWITCH_KEY(convertToolHotKey) == _keycode && checkHotKey(convertToolHotKey, GET_SWITCH_KEY(convertToolHotKey) != 0xFE)) {
-				AppDelegate::getInstance()->onQuickConvert();
+				PostMessage(SystemTrayHelper::getWindow(), WM_APP_QUICK_CONVERT, 0, 0);
 				_hasJustUsedHotKey = true;
 				_keycode = 0;
 				return -1;
@@ -544,7 +481,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 				_hasJustUsedHotKey = true;
 			}
 			if (checkHotKey(convertToolHotKey, GET_SWITCH_KEY(convertToolHotKey) != 0xFE)) {
-				AppDelegate::getInstance()->onQuickConvert();
+				PostMessage(SystemTrayHelper::getWindow(), WM_APP_QUICK_CONVERT, 0, 0);
 				_hasJustUsedHotKey = true;
 			}
 			//check temporarily turn off spell checking
@@ -579,6 +516,14 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 
 	//handle keyboard
 	if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+		if (vOtherLanguage) {
+			HWND ime = ImmGetDefaultIMEWnd(GetForegroundWindow());
+			DWORD_PTR open = 0;
+			if (ime && (!SendMessageTimeout(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0,
+				SMTO_ABORTIFHUNG | SMTO_BLOCK, 10, &open) || open)) {
+				return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+			}
+		}
 		//send event signal to Engine
 		vKeyHandleEvent(vKeyEvent::Keyboard,
 						vKeyEventState::KeyDown,
@@ -648,6 +593,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode < 0) return CallNextHookEx(hMouseHook, nCode, wParam, lParam);
 	mouseData = (MSLLHOOKSTRUCT *)lParam;
 	switch (wParam) {
 	case WM_LBUTTONDOWN:
@@ -695,9 +641,6 @@ VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, H
 				saveSmartSwitchKeyData();
 			}
 		}
-		if (vSupportMetroApp && exe.compare("ApplicationFrameHost.exe") == 0) {//Metro App
-			SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-			SendMessage(HWND_BROADCAST, WM_CHAR, VK_BACK, 0L);
-		}
+		SendMetroBackspace();
 	}
 }

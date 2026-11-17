@@ -34,4 +34,5 @@ extern map<Uint16, vector<Uint16>> _quickEndConsonant;
 extern map<Uint32, Uint32> _characterMap;
 
 extern Uint16 keyCodeToCharacter(const Uint32& keyCode);
+bool findCharacter(Uint16 character, Uint8 table, Uint32& key, size_t& index);
 #endif /* Vietnamese_h */

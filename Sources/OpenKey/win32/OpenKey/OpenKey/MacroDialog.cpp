@@ -169,7 +169,10 @@ void MacroDialog::onAddMacroButton() {
 		return;
 	}
 
-	addMacro(wideStringToUtf8(name), wideStringToUtf8(content));
+	if (!addMacro(wideStringToUtf8(name), wideStringToUtf8(content))) {
+		MessageBox(hDlg, _T("Từ gõ tắt tối đa 255 byte, nội dung tối đa 65535 byte UTF-8; dữ liệu phải hợp lệ."), _T("OpenKey"), MB_OK);
+		return;
+	}
 	SetWindowText(hMacroName, _T(""));
 	SetWindowText(hMacroContent, _T(""));
 	saveAndReload();

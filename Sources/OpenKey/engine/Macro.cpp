@@ -12,6 +12,7 @@
 #include <iostream>
 #include <memory.h>
 #include <fstream>
+#include <stdexcept>
 
 using namespace std;
 
@@ -24,43 +25,24 @@ static int c = 0;
 static bool _macroFlag = false;
 static Uint16 _kChar = 0;
 static Uint32 _charBuff;
-static int _kMacro;
 
 static void convert(const string& str, vector<Uint32>& outData) {
     outData.clear();
     wstring data = utf8ToWideString(str);
-    Uint32 t = 0;
-    int kSign = -1;
-    int k = 0;
-    for (int i = 0; i < data.size(); i++) {
-        t = (Uint32)data[i];
-        
-        //find normal character fist
-        if (_characterMap.find(t) != _characterMap.end()) {
-            outData.push_back(_characterMap[t]);
+    outData.reserve(data.size());
+    for (wchar_t character : data) {
+        const auto normal = _characterMap.find(character);
+        if (normal != _characterMap.end()) {
+            outData.push_back(normal->second);
             continue;
         }
-        
-        //find character which has tone/mark
-        for (map<Uint32, vector<Uint16>>::iterator it = _codeTable[0].begin(); it != _codeTable[0].end(); ++it) {
-            kSign = -1;
-            k = 0;
-            for (int j = 0; j < it->second.size(); j++) {
-                if ((Uint16)t == it->second[j]) {
-                    kSign = 0;
-                    outData.push_back(_codeTable[vCodeTable][it->first][k] | CHAR_CODE_MASK);
-                    break;
-                }//end if
-                k++;
-            }
-            if (kSign != -1)
-                break;
+        Uint32 key;
+        size_t index;
+        if (findCharacter(character, 0, key, index)) {
+            outData.push_back(_codeTable[vCodeTable].at(key)[index] | CHAR_CODE_MASK);
+        } else {
+            outData.push_back(static_cast<Uint32>(character) | PURE_CHARACTER_MASK);
         }
-        if (kSign != -1)
-            continue;
-        
-        //find other character
-        outData.push_back(t | PURE_CHARACTER_MASK); //mark it as pure character
     }
 }
 
@@ -77,39 +59,45 @@ static void convert(const string& str, vector<Uint32>& outData) {
  * ...
  * next macro
  */
-void initMacroMap(const Byte* pData, const int& size) {
-    macroMap.clear();
-    Uint16 macroCount = 0;
-    Uint32 cursor = 0;
-    if (size >= 2) {
-        memcpy(&macroCount, pData + cursor, 2);
-        cursor+=2;
+bool initMacroMap(const Byte* pData, const int& size) {
+    if (size == 0) {
+        macroMap.clear();
+        return true;
     }
-    Uint8 macroTextSize;
-    Uint16 macroContentSize;
-    for (int i = 0; i < macroCount; i++) {
-        macroTextSize = pData[cursor++];
-        string macroText((char*)pData + cursor, macroTextSize);
-        cursor += macroTextSize;
-        
-        memcpy(&macroContentSize, pData + cursor, 2);
-        cursor+=2;
-        string macroContent((char*)pData + cursor, macroContentSize);
-        cursor += macroContentSize;
-        
-        MacroData data;
-        data.macroText = macroText;
-        data.macroContent = macroContent;
-        
-        vector<Uint32> key;
-        convert(macroText, key);
-        convert(macroContent, data.macroContentCode);
-        
-        macroMap[key] = data;
+    if (!pData || size < 2) return false;
+    const size_t length = static_cast<size_t>(size);
+    const Uint16 macroCount = pData[0] | (pData[1] << 8);
+    size_t cursor = 2;
+    map<vector<Uint32>, MacroData> loaded;
+    try {
+        for (Uint32 n = 0; n < macroCount; n++) {
+            if (cursor >= length) return false;
+            const size_t textSize = pData[cursor++];
+            if (!textSize || textSize > length - cursor) return false;
+            MacroData data;
+            data.macroText.assign(reinterpret_cast<const char*>(pData + cursor), textSize);
+            cursor += textSize;
+            if (length - cursor < 2) return false;
+            const size_t contentSize = pData[cursor] | (pData[cursor + 1] << 8);
+            cursor += 2;
+            if (contentSize > length - cursor) return false;
+            data.macroContent.assign(reinterpret_cast<const char*>(pData + cursor), contentSize);
+            cursor += contentSize;
+            vector<Uint32> key;
+            convert(data.macroText, key);
+            convert(data.macroContent, data.macroContentCode);
+            loaded.emplace(std::move(key), std::move(data));
+        }
+    } catch (const std::range_error&) {
+        return false;
     }
+    if (cursor != length) return false;
+    macroMap.swap(loaded);
+    return true;
 }
 
 void getMacroSaveData(vector<Byte>& outData) {
+    outData.clear();
     Uint16 totalMacro = (Uint16)macroMap.size();
     outData.push_back((Byte)totalMacro);
     outData.push_back((Byte)(totalMacro>>8));
@@ -132,34 +120,28 @@ void getMacroSaveData(vector<Byte>& outData) {
 static bool modifyCaseUnicode(Uint32& code, const bool& isUpperCase=true) {
     _charBuff = code;
     if (!(code & CHAR_CODE_MASK)) { //for normal char
-        code &= isUpperCase ? CAPS_MASK :  ~CAPS_MASK;
+        if (isUpperCase) code |= CAPS_MASK;
+        else code &= ~CAPS_MASK;
         return code != _charBuff;
     }
     
-    //for unicode character
-    for (map<Uint32, vector<Uint16>>::iterator it = _codeTable[vCodeTable].begin(); it != _codeTable[vCodeTable].end(); ++it) {
-        for (_kMacro = 0; _kMacro < it->second.size(); _kMacro++) {
-            if ((Uint16)code == it->second[_kMacro]) {
-                if (_kMacro % 2 == 0 && !isUpperCase)
-                    _kMacro++;
-                else if (_kMacro % 2 != 0 && isUpperCase)
-                    _kMacro--;
-                code = _codeTable[vCodeTable][it->first][_kMacro] | CHAR_CODE_MASK;
-                return code != _charBuff;;
-            }//end if
-        }
+    Uint32 key;
+    size_t index;
+    if (findCharacter(static_cast<Uint16>(code), vCodeTable, key, index)) {
+        if (index % 2 == 0 && !isUpperCase) index++;
+        else if (index % 2 != 0 && isUpperCase) index--;
+        code = _codeTable[vCodeTable].at(key)[index] | CHAR_CODE_MASK;
     }
-    return false;
+    return code != _charBuff;
 }
 
 bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
     for (c = 0; c < key.size(); c++) {
         key[c] = getCharacterCode(key[c]);
     }
-    if (macroMap.find(key) != macroMap.end()) {
-        macroContentCode.clear();
-        MacroData data = macroMap[key];
-        macroContentCode = data.macroContentCode;
+    auto entry = macroMap.find(key);
+    if (entry != macroMap.end()) {
+        macroContentCode = entry->second.macroContentCode;
         return true;
     }
     if (vAutoCapsMacro) {
@@ -172,10 +154,9 @@ bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
         }
         
         if (key.size() > 0 && modifyCaseUnicode(key[0], false)) {
-            if (macroMap.find(key) != macroMap.end()) {
-                macroContentCode.clear();
-                MacroData data = macroMap[key];
-                macroContentCode = data.macroContentCode;
+            entry = macroMap.find(key);
+            if (entry != macroMap.end()) {
+                macroContentCode = entry->second.macroContentCode;
                 for (c = 0; c < macroContentCode.size(); c++) {
                     if (c == 0 || _macroFlag) {
                         _kChar = keyCodeToCharacter(macroContentCode[c]);
@@ -198,7 +179,11 @@ bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
 
 bool hasMacro(const string& macroName) {
     vector<Uint32> key;
-    convert(macroName, key);
+    try {
+        convert(macroName, key);
+    } catch (const std::range_error&) {
+        return false;
+    }
     return (macroMap.find(key) != macroMap.end());
 }
 
@@ -214,24 +199,29 @@ void getAllMacro(vector<vector<Uint32>>& keys, vector<string>& macroTexts, vecto
 }
 
 bool addMacro(const string& macroText, const string& macroContent) {
+    if (macroText.empty() || macroText.size() > 255 || macroContent.size() > 65535) return false;
     vector<Uint32> key;
-    convert(macroText, key);
-    if (macroMap.find(key) == macroMap.end()) { //add new macro
-        MacroData data;
-        data.macroText = macroText;
-        data.macroContent = macroContent;
+    MacroData data;
+    data.macroText = macroText;
+    data.macroContent = macroContent;
+    try {
+        convert(macroText, key);
         convert(macroContent, data.macroContentCode);
-        macroMap[key] = data;
-    } else { //edit this macro
-        macroMap[key].macroContent = macroContent;
-        convert(macroContent, macroMap[key].macroContentCode);
+    } catch (const std::range_error&) {
+        return false;
     }
+    if (macroMap.size() >= 65535 && macroMap.find(key) == macroMap.end()) return false;
+    macroMap[std::move(key)] = std::move(data);
     return true;
 }
 
 bool deleteMacro(const string& macroText) {
     vector<Uint32> key;
-    convert(macroText, key);
+    try {
+        convert(macroText, key);
+    } catch (const std::range_error&) {
+        return false;
+    }
     if (macroMap.find(key) != macroMap.end()) {
         macroMap.erase(key);
         return true;

@@ -15,7 +15,7 @@ extern CGEventRef OpenKeyCallback(CGEventTapProxy proxy,
                                   CGEventRef event,
                                   void *refcon);
 
-extern NSString* ConvertUtil(NSString* str);
+extern void QuickConvert(void (^completion)(BOOL));
 
 @interface OpenKeyManager ()
 
@@ -77,6 +77,10 @@ static CFRunLoopSourceRef runLoopSource;
     return YES;
 }
 
++(void)resumeEventTap {
+    if (eventTap) CGEventTapEnable(eventTap, true);
+}
+
 +(BOOL)stopEventTap {
     if (_isInited) { //release all object
         CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
@@ -106,29 +110,8 @@ static CFRunLoopSourceRef runLoopSource;
 }
 
 #pragma mark -Convert feature
-+(BOOL)quickConvert {
-    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-    NSString *htmlString = [pasteboard stringForType:NSPasteboardTypeHTML];
-    NSString *rawString = [pasteboard stringForType:NSPasteboardTypeString];
-    bool converted = false;
-    if (htmlString != nil) {
-        htmlString = ConvertUtil(htmlString);
-        converted = true;
-    }
-    if (rawString != nil) {
-        rawString = ConvertUtil(rawString);
-        converted = true;
-    }
-    if (converted) {
-        [pasteboard clearContents];
-        if (htmlString != nil)
-            [pasteboard setString:htmlString forType:NSPasteboardTypeHTML];
-        if (rawString != nil)
-            [pasteboard setString:rawString forType:NSPasteboardTypeString];
-        
-        return YES;
-    }
-    return NO;
++(void)quickConvert:(void (^)(BOOL success))completion {
+    QuickConvert(completion);
 }
 
 +(void)showMessage:(NSWindow*)window message:(NSString*)msg subMsg:(NSString*)subMsg {

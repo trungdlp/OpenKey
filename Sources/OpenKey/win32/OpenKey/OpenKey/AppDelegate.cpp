@@ -12,6 +12,7 @@ You can fork, modify, improve this program. If you
 redistribute your new version, it MUST be open source.
 -----------------------------------------------------------*/
 #include "AppDelegate.h"
+#include <thread>
 
 static AppDelegate* _instance;
 
@@ -257,14 +258,32 @@ void AppDelegate::onConvertTool() {
 	}
 }
 
-void AppDelegate::onQuickConvert() {
-	if (OpenKeyHelper::quickConvert()) {
-		//alert when complete
+void AppDelegate::onQuickConvert(HWND owner) {
+	if (converting) return;
+	const ConvertOptions options = getConvertOptions();
+	HWND window = SystemTrayHelper::getWindow();
+	converting = true;
+	std::thread([options, window, owner] {
+		bool success = false;
+		try {
+			success = OpenKeyHelper::quickConvert(options, window);
+		} catch (const std::exception&) {
+		}
+		PostMessage(window, WM_APP_CONVERT_COMPLETED, success, reinterpret_cast<LPARAM>(owner));
+	}).detach();
+}
+
+void AppDelegate::onQuickConvertCompleted(bool success, HWND owner) {
+	converting = false;
+	if (owner && !IsWindow(owner)) owner = NULL;
+	if (success) {
 		if (!convertToolDontAlertWhenCompleted) {
 			TCHAR msg[256];
 			LoadString(hInstance, IDS_STRING_CONVERT_COMPLETED, msg, 256);
-			MessageBox(NULL, msg, _T("OpenKey"), MB_OK);
+			MessageBox(owner, msg, _T("OpenKey"), MB_OK);
 		}
+	} else {
+		MessageBox(owner, _T("Clipboard trống, đã thay đổi hoặc không thể chuyển mã."), _T("OpenKey"), MB_OK);
 	}
 }
 

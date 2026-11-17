@@ -236,12 +236,5 @@ void ConvertToolDialog::onSwitchButton() {
 }
 
 void ConvertToolDialog::onConvertButton() {
-	if (OpenKeyHelper::quickConvert()) {
-		//alert when complete
-		if (!convertToolDontAlertWhenCompleted) {
-			TCHAR msg[256];
-			LoadString(hInstance, IDS_STRING_CONVERT_COMPLETED, msg, 256);
-			MessageBox(this->hDlg, msg, _T("OpenKey"), MB_OK);
-		}
-	}
+	AppDelegate::getInstance()->onQuickConvert(hDlg);
 }
