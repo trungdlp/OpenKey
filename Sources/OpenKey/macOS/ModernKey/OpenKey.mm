@@ -233,7 +233,9 @@ extern "C" {
         NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
                                                                         kCGNullWindowID));
         for (NSDictionary *window in windows) {
-            if ([[window objectForKey:(__bridge NSString *)kCGWindowOwnerName] isEqualToString:@"Spotlight"]) {
+            // The Spotlight menu bar item stays on screen when search is closed.
+            if ([[window objectForKey:(__bridge NSString *)kCGWindowOwnerName] isEqualToString:@"Spotlight"] &&
+                [[window objectForKey:(__bridge NSString *)kCGWindowLayer] intValue] != CGWindowLevelForKey(kCGStatusWindowLevelKey)) {
                 return true;
             }
         }
