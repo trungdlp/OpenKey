@@ -16,6 +16,6 @@ GitHub auto-merge is enabled for this repository. Enable it on an individual PR 
 
 The protection also applies to administrators, requires linear history, and blocks force pushes and branch deletion. No approving review is mandatory, so the repository owner can merge their own PR after CI passes. Squash merge uses the PR title; use Conventional Commits titles. Auto-merge still waits for queued checks and may require **Update branch** when `master` advances.
 
-Workflows run once per PR update and on pushes to `master`. New commits cancel the previous run for the same PR. Jobs have explicit time limits. Windows artifact attestation runs after a push to `master`; it is not a required PR check and does not request write permissions on fork PRs.
+Workflows run once per PR update and on pushes to `master`. New commits cancel the previous run for the same PR. Each push to `master` has a separate concurrency group. Jobs have explicit time limits. Windows artifact attestation runs after a push to `master`; it is not a required PR check and does not request write permissions on fork PRs.
 
 Required check names are repository settings, not inferred from these YAML files. Keep the branch-protection check names in sync when renaming jobs or matrix entries. See [the test documentation](../tests/README.md) for coverage scope and local checks.
